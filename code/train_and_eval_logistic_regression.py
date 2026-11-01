@@ -1,104 +1,154 @@
 # -*- coding: utf-8 -*-
 
 """
-Apply the final logistic regression to ALL settlements and assess map accuracy.
+logistic_regression_single_model.py
+===================================
 
-Purpose
+Fit and evaluate one two-predictor logistic regression model that predicts
+whether an Arctic settlement experienced severe population decline from its
+nighttime lights (NTL) change metrics.
+
+The model is evaluated with stratified 5-fold cross-validation. A final
+model is then fitted on the full dataset to report coefficients and odds
+ratios.
+
+
+INPUT
+-----
+    outputs/ntl_analysis_sett/model_training_dataset.csv
+
+    One row per settlement. Required columns:
+        sett                 - settlement identifier
+        pop_decrease         - population change (%) for the settlement;
+                               negative values are declines
+        collapse_loss_pct    - % NTL loss from the 1992-1995 baseline to the
+                               series trough (see
+                               code/time_series/ntl_time_series_analysis.py)
+        recent_vs_early_pct  - % NTL change from 1992-1995 to 2010-2013
+
+    Byte-order marks (BOMs) and whitespace are stripped from column names.
+    Numeric columns are coerced to numbers: text placeholders ("", "nan",
+    "None", "NULL", "<NA>", ...) and +/-inf become NaN, while genuine zeros
+    are kept. Rows missing pop_decrease or either predictor are dropped
+    (complete-case analysis).
+
+
+OUTCOME
 -------
-This script applies the finalized logistic-regression workflow for predicting
-severe settlement population decline from artificial-light-at-night (ALAN)
-collapse/recovery metrics.
+    severe_decline_binary = 1 if pop_decrease <= SEVERE_DECLINE_THRESHOLD
+                            (-50, i.e. a population loss of 50% or more),
+                            otherwise 0.
 
-The model is NOT fitted here. It is fitted once, on the full training dataset,
-by code/models/logistic_regression_single_model.py, which saves its weights to:
-    logistic_two_variable_cv/two_variable_full_model_weights.json
+    severe_decline_class gives the same thing as a text label
+    ("Severe decline" / "Not severe decline").
 
-Run that script first whenever the training data, predictors or
-severe-decline threshold change.
+    The script stops with an error if only one class is present, or if
+    the smaller class has fewer than N_SPLITS (5) settlements, because
+    stratified 5-fold CV is then impossible.
 
-Workflow
+
+METHOD
+------
+    1. Stratified 5-fold cross-validation
+           Folds are shuffled with RANDOM_STATE = 42 for reproducibility and
+           keep the severe/not-severe ratio roughly equal in every fold.
+           In each fold:
+             - Predictors are standardised (z-scores) with a StandardScaler
+               fitted on the training folds only, then applied to the test
+               fold, so no information leaks from the test data.
+             - An intercept is added and a statsmodels Logit model is fitted
+               (L-BFGS, up to 500 iterations).
+             - Test settlements get a predicted probability of severe
+               decline and are classed as severe when the probability is
+               >= PROB_THRESHOLD (0.50).
+             - Fold-level metrics and training-fit statistics (AIC, BIC,
+               McFadden pseudo-R2) are recorded.
+
+    2. Pooled out-of-fold evaluation
+           Every settlement is predicted exactly once, by the model that did
+           not see it in training. These out-of-fold predictions are pooled
+           to compute overall metrics, a classification report and a
+           confusion matrix.
+
+    3. Final full-data model
+           The predictors are standardised over the full dataset and the
+           model is refitted on all settlements. Its coefficients are
+           therefore per one standard deviation of each predictor, and
+           odds_ratio = exp(coefficient) is the change in the odds of severe
+           decline for a 1 SD increase in that predictor. This model is for
+           interpretation; its performance is not separately evaluated.
+
+
+METRICS
+-------
+    accuracy, balanced_accuracy, roc_auc
+    precision / recall / f1 for the severe class (pos_label = 1)
+    macro and weighted precision / recall / f1
+    tp_severe, fn_severe, fp_severe, tn_not_severe (confusion matrix counts,
+    with "severe" as the positive class)
+
+    roc_auc is NaN for a fold whose test set contains only one class.
+
+
+OUTPUTS
+-------
+    Written to outputs/ntl_analysis_sett/logistic_two_variable_cv/ (created
+    if missing). CSVs are UTF-8 with BOM.
+
+        two_variable_class_counts.csv
+            Number of settlements in each outcome class after filtering.
+        two_variable_cv_fold_results.csv
+            One row per fold: train/test sizes, AIC, BIC, pseudo-R2 and all
+            metrics above.
+        two_variable_cv_predictions.csv
+            One row per settlement: inputs, observed class, fold, out-of-
+            fold probability and predicted class.
+        two_variable_oof_cv_classification_report.csv
+            sklearn classification report on the pooled out-of-fold
+            predictions.
+        two_variable_oof_cv_confusion_matrix.csv
+            Pooled confusion matrix (rows = actual, columns = predicted).
+        two_variable_full_model_coefficients.csv
+            Full-data model terms: coefficient, odds ratio, standard error,
+            z value and p value.
+        two_variable_full_model_summary.txt
+            The full statsmodels summary of the full-data model.
+        two_variable_full_model_weights.json
+            Everything needed to apply the full-data model to new data
+            without refitting: predictor names and order, intercept,
+            coefficients, the StandardScaler mean and scale for each
+            predictor, the severe-decline threshold used for the labels,
+            and training sample counts. Read by
+            code/models/lr_pred_and_assess.py.
+
+            To predict, standardise each predictor with
+                z = (x - scaler_mean) / scaler_scale
+            and then
+                p = 1 / (1 + exp(-(intercept + sum(coefficient * z))))
+
+    The pooled out-of-fold metrics are printed to the console only; they
+    are not saved to a file.
+
+
+SETTINGS
 --------
-1. Load the saved model weights (intercept, coefficients and the
-   StandardScaler mean/scale for each predictor).
-
-2. Check that the saved model matches this script's settings:
-       - the predictors and their order must equal PREDICTORS
-       - the severe-decline threshold used to label the training data must
-         equal SEVERE_DECLINE_THRESHOLD
-   The script stops with an error if either differs.
-
-3. (no refitting) Predicted probability for each row is
-       z = (x - scaler_mean) / scaler_scale
-       p = 1 / (1 + exp(-(intercept + sum(coefficient * z))))
-
-4. Apply the saved model to the full NTL metrics dataset:
-       ntl_collapse_recovery_metrics.csv
-
-   This produces the map-ready prediction table:
-       ntl_all_settlements_logistic_predictions.csv
-
-5. Read the independent master validation dataset:
-       master_matched_validation_with_all_metrics.csv
-
-6. Recalculate validation true labels from:
-       percent_decrease <= SEVERE_DECLINE_THRESHOLD
-
-   This ensures the same severe-decline threshold is applied consistently to
-   both training and validation labels.
-
-7. Apply the same saved model to the validation rows.
-
-8. Assess accuracy using the fixed probability threshold only:
-       PROB_THRESHOLD
-
-Outputs
--------
-Full settlement prediction outputs:
-    ntl_all_settlements_logistic_predictions.csv
-    ntl_all_settlements_logistic_scaler_params.csv
-        (scaler mean/std and coefficient per predictor, copied from the
-        weights file for reference)
-
-The full statsmodels summary of the model is written by the training script
-(two_variable_full_model_summary.txt), not here.
-
-Validation outputs:
-    logistic_master_validation_predictions.csv
-    logistic_master_validation_metrics.csv
-    logistic_master_validation_confusion_matrix.csv
-    logistic_master_validation_classification_report.csv
-    logistic_master_validation_run_summary.csv
-
-Important methodological note
------------------------------
-This script intentionally does NOT test a range of probability thresholds on
-the validation dataset. Threshold testing belongs in the model-selection script,
-where thresholds are selected using out-of-fold training predictions only.
-
-The independent validation dataset should be used only once to evaluate the
-already-selected model and already-selected threshold.
-
-Label convention
-----------------
-1 = Severe decline
-0 = Not severe decline
-
-Zeros in predictor columns are preserved as valid numeric values. Only blank,
-non-numeric, NaN, or infinite values are treated as missing.
+    SEVERE_DECLINE_THRESHOLD  population change (%) at or below which a
+                              settlement counts as severe decline (-50)
+    PROB_THRESHOLD            probability cut-off for predicting severe (0.50)
+    N_SPLITS                  number of CV folds (5)
+    RANDOM_STATE              seed for fold shuffling (42)
+    PREDICTORS                model predictor columns
 """
 
-import os
-
-os.environ["PROJ_LIB"] = (
-    r"C:\Users\etm17002\Miniconda3\envs\osm\Library\share\proj"
-)
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import geopandas as gpd
+import statsmodels.api as sm
 
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -110,102 +160,52 @@ from sklearn.metrics import (
     classification_report,
 )
 
-
 # =====================================================
-# FILE PATHS
+# FILES
 # =====================================================
 
-# Written by code/models/logistic_regression_single_model.py
-MODEL_WEIGHTS_FILE = Path(
-    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\logistic_two_variable_cv\two_variable_full_model_weights.json"
+IN_FILE = Path(
+    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\model_training_dataset.csv"
 )
 
-PREDICT_FILE = Path(
-    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\ntl_collapse_recovery_metrics_v2.csv"
+OUT_DIR = Path(
+    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\logistic_two_variable_cv"
 )
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-MASTER_MATCHED_FILE = Path(
-    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\accuracy_assessment\master_matched_validation_with_all_metrics.csv"
-)
-
-SETT_POINTS_FILE = Path(
-    r"D:\PhD_main\chapter_3\data\rus_sett_DCW_ACPR.shp"
-)
-
-SETT_BUFFERS_FILE = Path(
-    r"D:\PhD_main\chapter_3\outputs\gis\named_sett_500m_dissolved_buffers.shp"
-)
-
-OUT_ALL_PRED_DIR = Path(
-    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\logistic_prediction_all_settlements_v3"
-)
-OUT_ALL_PRED_DIR.mkdir(parents=True, exist_ok=True)
-
-OUT_ASSESS_DIR = Path(
-    r"D:\PhD_main\chapter_3\outputs\ntl_analysis_sett\accuracy_assessment\logistic_regression_v3"
-)
-OUT_ASSESS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Full prediction outputs
-OUT_ALL_PREDICTIONS = OUT_ALL_PRED_DIR / "ntl_all_settlements_logistic_predictions.csv"
-OUT_SCALER_PARAMS = OUT_ALL_PRED_DIR / "ntl_all_settlements_logistic_scaler_params.csv"
-
-OUT_POINTS_GPKG = OUT_ALL_PRED_DIR / "ntl_all_settlements_logistic_predictions_points.gpkg"
-OUT_BUFFERS_GPKG = OUT_ALL_PRED_DIR / "ntl_all_settlements_logistic_predictions_buffers.gpkg"
-OUT_SPATIAL_JOIN_SUMMARY = OUT_ALL_PRED_DIR / "ntl_all_settlements_logistic_predictions_spatial_join_summary.csv"
-
-# Validation accuracy outputs
-OUT_VALIDATION_PREDICTIONS = OUT_ASSESS_DIR / "logistic_master_validation_predictions.csv"
-OUT_METRICS = OUT_ASSESS_DIR / "logistic_master_validation_metrics.csv"
-OUT_CONFUSION = OUT_ASSESS_DIR / "logistic_master_validation_confusion_matrix.csv"
-OUT_CLASS_REPORT = OUT_ASSESS_DIR / "logistic_master_validation_classification_report.csv"
-OUT_RUN_SUMMARY = OUT_ASSESS_DIR / "logistic_master_validation_run_summary.csv"
-
+OUT_CLASS_COUNTS = OUT_DIR / "two_variable_class_counts.csv"
+OUT_CV_FOLDS = OUT_DIR / "two_variable_cv_fold_results.csv"
+OUT_CV_PREDICTIONS = OUT_DIR / "two_variable_cv_predictions.csv"
+OUT_CV_REPORT = OUT_DIR / "two_variable_oof_cv_classification_report.csv"
+OUT_CV_CONFUSION = OUT_DIR / "two_variable_oof_cv_confusion_matrix.csv"
+OUT_FULL_COEFS = OUT_DIR / "two_variable_full_model_coefficients.csv"
+OUT_FULL_SUMMARY = OUT_DIR / "two_variable_full_model_summary.txt"
+OUT_FULL_WEIGHTS = OUT_DIR / "two_variable_full_model_weights.json"
 
 # =====================================================
 # SETTINGS
 # =====================================================
 
-SETT_COL = "sett"
+POP_COL = "pop_decrease"
+BINARY_COL = "severe_decline_binary"
+CLASS_COL = "severe_decline_class"
 
-# Training population-change column.
-TRAIN_POP_CHANGE_COL = "pop_decrease"
+SEVERE_DECLINE_THRESHOLD = -50
+PROB_THRESHOLD = 0.50
 
-# Validation population-change column.
-# This should be in percentage units, e.g. -42.5 means -42.5%.
-VALIDATION_PERCENT_CHANGE_COL = "percent_decrease"
+N_SPLITS = 5
+RANDOM_STATE = 42
 
-TRAIN_BINARY_COL = "severe_decline_binary"
-
-TRUE_BINARY_COL = "true_severe_decline_binary"
-TRUE_CLASS_COL = "true_severe_decline_class"
-
-PROB_COL = "prob_severe_decline"
-PRED_BINARY_COL = "pred_binary"
-PRED_CLASS_COL = "predicted_class"
-
-# Same severe-decline threshold used for training and validation labels.
-SEVERE_DECLINE_THRESHOLD = -50.0
-
-# Model probability threshold
-PROB_THRESHOLD = 0.45
-
-# Final selected logistic predictors.
-# These must match the model-selection output.
 PREDICTORS = [
     "collapse_loss_pct",
     "recent_vs_early_pct",
 ]
-
 
 # =====================================================
 # HELPERS
 # =====================================================
 
 def clean_columns(df):
-    """
-    Clean common CSV encoding artifacts and whitespace in column names.
-    """
     df = df.copy()
     df.columns = (
         df.columns
@@ -217,25 +217,12 @@ def clean_columns(df):
 
 
 def clean_numeric_keep_zero(series):
-    """
-    Convert to numeric while keeping 0 as a valid value.
-
-    Handles:
-        - unicode minus signs
-        - percent signs
-        - comma separators
-        - common null strings
-        - infinite values
-    """
     s = series.copy()
 
     if s.dtype == object:
         s = (
             s.astype(str)
             .str.strip()
-            .str.replace("\u2212", "-", regex=False)
-            .str.replace("%", "", regex=False)
-            .str.replace(",", "", regex=False)
             .replace(
                 {
                     "": np.nan,
@@ -256,241 +243,58 @@ def clean_numeric_keep_zero(series):
     return s
 
 
-def check_required_columns(df, required_cols, file_label):
-    """
-    Raise an error if required columns are missing.
-    """
-    missing = [c for c in required_cols if c not in df.columns]
+def fit_logit(X, y):
+    model = sm.Logit(y, X)
 
-    if missing:
-        raise RuntimeError(
-            f"\nMissing required columns in {file_label}: {missing}\n\n"
-            f"Available columns:\n{df.columns.tolist()}"
-        )
-
-
-def resolve_predictor_columns(df, predictors):
-    """
-    Find predictor columns in a dataframe.
-
-    In the master matched file, columns may be unsuffixed or suffixed from a
-    merge. Unsuffixed metric columns are preferred.
-    """
-    resolved = {}
-
-    for predictor in predictors:
-        candidates = [
-            predictor,
-            f"{predictor}_metrics",
-            f"{predictor}_pred",
-            f"{predictor}_true",
-        ]
-
-        found = [c for c in candidates if c in df.columns]
-
-        if not found:
-            raise RuntimeError(
-                f"Could not find predictor `{predictor}`.\n"
-                f"Tried: {candidates}\n"
-                f"Available columns:\n{df.columns.tolist()}"
-            )
-
-        resolved[predictor] = found[0]
-
-    return resolved
-
-
-def add_validation_true_labels(validation_df):
-    """
-    Recalculate validation true labels from the validation population-change field.
-
-    This intentionally ignores stale pre-existing true-label columns and rebuilds
-    labels using SEVERE_DECLINE_THRESHOLD.
-    """
-    df = validation_df.copy()
-
-    if VALIDATION_PERCENT_CHANGE_COL not in df.columns:
-        raise RuntimeError(
-            f"Master validation file is missing `{VALIDATION_PERCENT_CHANGE_COL}`.\n"
-            "The validation file must contain this column so the same "
-            "severe-decline threshold can be applied to validation labels."
-        )
-
-    df[VALIDATION_PERCENT_CHANGE_COL] = clean_numeric_keep_zero(
-        df[VALIDATION_PERCENT_CHANGE_COL]
+    result = model.fit(
+        method="lbfgs",
+        disp=False,
+        maxiter=500,
     )
 
-    df[TRUE_BINARY_COL] = np.where(
-        df[VALIDATION_PERCENT_CHANGE_COL] <= SEVERE_DECLINE_THRESHOLD,
-        1,
-        np.where(df[VALIDATION_PERCENT_CHANGE_COL].notna(), 0, np.nan)
-    )
-
-    df[TRUE_CLASS_COL] = np.where(
-        df[TRUE_BINARY_COL] == 1,
-        "Severe decline",
-        np.where(df[TRUE_BINARY_COL] == 0, "Not severe decline", pd.NA)
-    )
-
-    df["validation_label_threshold_used"] = SEVERE_DECLINE_THRESHOLD
-    df["validation_label_source_column"] = VALIDATION_PERCENT_CHANGE_COL
-
-    return df
+    return result
 
 
-# =====================================================
-# MODEL WEIGHTS
-# =====================================================
-
-def load_model_weights(path):
-    """
-    Load the saved logistic model and check it matches this script's settings.
-    """
-    if not path.exists():
-        raise RuntimeError(
-            f"Model weights file not found:\n  {path}\n"
-            "Run code/models/logistic_regression_single_model.py first."
-        )
-
-    with open(path, "r", encoding="utf-8") as f:
-        model = json.load(f)
-
-    if list(model["predictors"]) != list(PREDICTORS):
-        raise RuntimeError(
-            "Saved model predictors do not match PREDICTORS.\n"
-            f"  Saved:  {model['predictors']}\n"
-            f"  Script: {PREDICTORS}\n"
-            "Refit the model or update PREDICTORS."
-        )
-
-    if not np.isclose(model["severe_decline_threshold"], SEVERE_DECLINE_THRESHOLD):
-        raise RuntimeError(
-            "Saved model was trained with a different severe-decline threshold.\n"
-            f"  Saved:  {model['severe_decline_threshold']}\n"
-            f"  Script: {SEVERE_DECLINE_THRESHOLD}\n"
-            "Refit the model or update SEVERE_DECLINE_THRESHOLD so training "
-            "and validation labels use the same threshold."
-        )
-
-    if not model.get("converged", True):
-        print("[WARNING] The saved model did not converge when it was fitted.")
-
-    return model
-
-
-def predict_proba(X_raw, model):
-    """
-    Predicted probability of severe decline from raw (unscaled) predictors.
-    """
-    mean = np.array([model["scaler_mean"][p] for p in PREDICTORS])
-    scale = np.array([model["scaler_scale"][p] for p in PREDICTORS])
-    coefs = np.array([model["coefficients"][p] for p in PREDICTORS])
-
-    z = (X_raw[PREDICTORS].to_numpy(dtype=float) - mean) / scale
-    linear = model["intercept"] + z @ coefs
-
-    return pd.Series(1.0 / (1.0 + np.exp(-linear)), index=X_raw.index)
-
-
-# =====================================================
-# PREDICTION
-# =====================================================
-
-def apply_logistic_model(df, model, source_label):
-    """
-    Apply the saved logistic model to any dataframe containing the predictors.
-
-    Rows with missing predictors are retained in the output but receive missing
-    prediction fields.
-    """
-    out = df.copy()
-
-    if SETT_COL in out.columns:
-        out[SETT_COL] = out[SETT_COL].astype(str).str.strip()
-
-    predictor_map = resolve_predictor_columns(out, PREDICTORS)
-
-    X_raw = pd.DataFrame(index=out.index)
-
-    for predictor in PREDICTORS:
-        source_col = predictor_map[predictor]
-        X_raw[predictor] = clean_numeric_keep_zero(out[source_col])
-
-    valid_predictor_mask = X_raw.notna().all(axis=1)
-
-    out[PROB_COL] = np.nan
-    out[PRED_BINARY_COL] = np.nan
-    out[PRED_CLASS_COL] = pd.NA
-    out["prediction_status"] = "missing predictor value"
-    out["prediction_source"] = source_label
-
-    if valid_predictor_mask.sum() > 0:
-        pred_prob = predict_proba(X_raw.loc[valid_predictor_mask], model)
-        pred_binary = (pred_prob >= PROB_THRESHOLD).astype(int)
-
-        out.loc[valid_predictor_mask, PROB_COL] = pred_prob
-        out.loc[valid_predictor_mask, PRED_BINARY_COL] = pred_binary
-        out.loc[valid_predictor_mask, PRED_CLASS_COL] = np.where(
-            pred_binary == 1,
-            "Severe decline",
-            "Not severe decline"
-        )
-        out.loc[valid_predictor_mask, "prediction_status"] = "predicted"
-
-    # Add exact model input values for transparency.
-    for predictor in PREDICTORS:
-        out[f"logit_input_{predictor}"] = X_raw[predictor]
-
-    return out, predictor_map, valid_predictor_mask
-
-
-def order_prediction_columns(df):
-    """
-    Put the most important fields first while preserving all other columns.
-    """
-    first_cols = [
-        SETT_COL,
-        "sett_true",
-        VALIDATION_PERCENT_CHANGE_COL,
-        TRUE_BINARY_COL,
-        TRUE_CLASS_COL,
-        PROB_COL,
-        PRED_BINARY_COL,
-        PRED_CLASS_COL,
-        "prediction_status",
-        "prediction_source",
-        "validation_label_threshold_used",
-        "validation_label_source_column",
-    ] + PREDICTORS + [f"logit_input_{p}" for p in PREDICTORS]
-
-    first_cols = [c for c in first_cols if c in df.columns]
-    remaining_cols = [c for c in df.columns if c not in first_cols]
-
-    return df[first_cols + remaining_cols]
-
-
-# =====================================================
-# ACCURACY
-# =====================================================
-
-def calculate_metrics(y_true, y_pred, y_prob=None):
-    """
-    Calculate fixed-threshold validation metrics.
-    """
+def calculate_metrics(y_true, y_pred, y_prob):
     metrics = {
-        "n": len(y_true),
         "accuracy": accuracy_score(y_true, y_pred),
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
-        "precision_severe": precision_score(y_true, y_pred, zero_division=0),
-        "recall_severe": recall_score(y_true, y_pred, zero_division=0),
-        "f1_severe": f1_score(y_true, y_pred, zero_division=0),
+
+        "precision_severe": precision_score(
+            y_true, y_pred, pos_label=1, zero_division=0
+        ),
+        "recall_severe": recall_score(
+            y_true, y_pred, pos_label=1, zero_division=0
+        ),
+        "f1_severe": f1_score(
+            y_true, y_pred, pos_label=1, zero_division=0
+        ),
+
+        "precision_macro": precision_score(
+            y_true, y_pred, average="macro", zero_division=0
+        ),
+        "recall_macro": recall_score(
+            y_true, y_pred, average="macro", zero_division=0
+        ),
+        "f1_macro": f1_score(
+            y_true, y_pred, average="macro", zero_division=0
+        ),
+
+        "precision_weighted": precision_score(
+            y_true, y_pred, average="weighted", zero_division=0
+        ),
+        "recall_weighted": recall_score(
+            y_true, y_pred, average="weighted", zero_division=0
+        ),
+        "f1_weighted": f1_score(
+            y_true, y_pred, average="weighted", zero_division=0
+        ),
     }
 
-    if y_prob is not None:
-        try:
-            metrics["roc_auc"] = roc_auc_score(y_true, y_prob)
-        except ValueError:
-            metrics["roc_auc"] = np.nan
+    try:
+        metrics["roc_auc"] = roc_auc_score(y_true, y_prob)
+    except ValueError:
+        metrics["roc_auc"] = np.nan
 
     conf = confusion_matrix(y_true, y_pred, labels=[1, 0])
 
@@ -502,445 +306,308 @@ def calculate_metrics(y_true, y_pred, y_prob=None):
     return metrics
 
 
-def save_validation_accuracy_outputs(validation_pred):
-    """
-    Save fixed-threshold accuracy outputs for the independent validation set.
-    """
-    if TRUE_BINARY_COL not in validation_pred.columns:
-        raise RuntimeError(f"Validation file is missing `{TRUE_BINARY_COL}`.")
-
-    validation_pred[TRUE_BINARY_COL] = clean_numeric_keep_zero(
-        validation_pred[TRUE_BINARY_COL]
-    )
-
-    d = validation_pred.dropna(subset=[TRUE_BINARY_COL, PRED_BINARY_COL]).copy()
-
-    if len(d) == 0:
-        raise RuntimeError("No validation rows have both true labels and predictions.")
-
-    y_true = d[TRUE_BINARY_COL].astype(int)
-    y_pred = d[PRED_BINARY_COL].astype(int)
-    y_prob = d[PROB_COL].astype(float)
-
-    metrics = calculate_metrics(y_true, y_pred, y_prob)
-    metrics["severe_decline_threshold_used_for_validation"] = SEVERE_DECLINE_THRESHOLD
-    metrics["prob_threshold_used"] = PROB_THRESHOLD
-
-    metrics_df = pd.DataFrame([metrics])
-    metrics_df.to_csv(OUT_METRICS, index=False, encoding="utf-8-sig")
-
-    conf = confusion_matrix(y_true, y_pred, labels=[1, 0])
-
-    conf_df = pd.DataFrame(
-        conf,
-        index=["actual_Severe decline", "actual_Not severe decline"],
-        columns=["pred_Severe decline", "pred_Not severe decline"]
-    )
-
-    conf_df.to_csv(OUT_CONFUSION, encoding="utf-8-sig")
-
-    report = classification_report(
-        y_true,
-        y_pred,
-        labels=[1, 0],
-        target_names=["Severe decline", "Not severe decline"],
-        output_dict=True,
-        zero_division=0
-    )
-
-    report_df = pd.DataFrame(report).T.reset_index()
-
-    report_df.to_csv(
-        OUT_CLASS_REPORT,
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-    return metrics_df, conf_df, report_df
-
-
-
 # =====================================================
-# SPATIAL OUTPUTS
+# READ DATA
 # =====================================================
 
-def make_join_key(series):
-    """
-    Create a conservative normalized settlement-name join key.
+print("[INFO] Reading data...")
 
-    The original `sett` field is preserved. This key only handles simple
-    case, whitespace, and BOM/encoding artifacts.
-    """
-    return (
-        series.astype(str)
-        .str.strip()
-        .str.lower()
-        .str.replace("\ufeff", "", regex=False)
-        .str.replace("ï»¿", "", regex=False)
-        .str.replace(r"\s+", " ", regex=True)
+df = pd.read_csv(IN_FILE)
+df = clean_columns(df)
+
+required = ["sett", POP_COL] + PREDICTORS
+missing = [c for c in required if c not in df.columns]
+
+if missing:
+    raise RuntimeError(
+        f"Missing required columns: {missing}\n"
+        f"Available columns:\n{df.columns.tolist()}"
     )
 
+df["sett"] = df["sett"].astype(str).str.strip()
 
-def prepare_predictions_for_spatial_join(predictions):
-    """
-    Prepare the prediction table for joining to spatial layers.
-    """
-    pred = predictions.copy()
+for col in [POP_COL] + PREDICTORS:
+    df[col] = clean_numeric_keep_zero(df[col])
 
-    if SETT_COL not in pred.columns:
-        raise RuntimeError(f"Prediction table is missing `{SETT_COL}`.")
+df = df.dropna(subset=[POP_COL] + PREDICTORS).copy()
 
-    pred[SETT_COL] = pred[SETT_COL].astype(str).str.strip()
-    pred["_join_key"] = make_join_key(pred[SETT_COL])
+df[BINARY_COL] = np.where(
+    df[POP_COL] <= SEVERE_DECLINE_THRESHOLD,
+    1,
+    0,
+)
 
-    duplicate_keys = int(pred["_join_key"].duplicated().sum())
+df[CLASS_COL] = np.where(
+    df[BINARY_COL] == 1,
+    "Severe decline",
+    "Not severe decline",
+)
 
-    if duplicate_keys > 0:
-        print(
-            f"[WARNING] Prediction table has {duplicate_keys} duplicate "
-            "settlement join keys. Keeping the first prediction per key."
-        )
-        pred = pred.drop_duplicates(subset=["_join_key"], keep="first").copy()
+class_counts = (
+    df[CLASS_COL]
+    .value_counts()
+    .reindex(["Severe decline", "Not severe decline"])
+    .reset_index()
+)
 
-    return pred
+class_counts.columns = [CLASS_COL, "n"]
+class_counts.to_csv(OUT_CLASS_COUNTS, index=False, encoding="utf-8-sig")
 
+print("\n[CLASS COUNTS]")
+print(class_counts.to_string(index=False))
 
-def write_prediction_spatial_layer(
-    spatial_file,
-    predictions,
-    out_gpkg,
-    layer_name,
-    spatial_label
-):
-    """
-    Join prediction attributes to a spatial layer and write a GeoPackage.
+if df[BINARY_COL].nunique() < 2:
+    raise RuntimeError("Only one class present after filtering.")
 
-    The spatial layer is retained as the base layer. Therefore, every geometry
-    in the input shapefile is preserved, and prediction attributes are attached
-    where settlement names match.
-    """
-    print(f"[INFO] Reading {spatial_label} spatial layer...")
-    gdf = gpd.read_file(spatial_file)
-    gdf = clean_columns(gdf)
-
-    if SETT_COL not in gdf.columns:
-        raise RuntimeError(
-            f"{spatial_label} spatial layer is missing `{SETT_COL}`.\n"
-            f"Available columns:\n{gdf.columns.tolist()}"
-        )
-
-    pred = prepare_predictions_for_spatial_join(predictions)
-
-    gdf[SETT_COL] = gdf[SETT_COL].astype(str).str.strip()
-    gdf["_join_key"] = make_join_key(gdf[SETT_COL])
-
-    core_pred_cols = [
-        "_join_key",
-        PROB_COL,
-        PRED_BINARY_COL,
-        PRED_CLASS_COL,
-        "prediction_status",
-        "prediction_source",
-    ] + PREDICTORS + [f"logit_input_{p}" for p in PREDICTORS]
-
-    # Add all non-overlapping prediction columns as well.
-    extra_pred_cols = [
-        c for c in pred.columns
-        if c not in gdf.columns and c not in core_pred_cols
-    ]
-
-    pred_cols_to_join = [
-        c for c in dict.fromkeys(core_pred_cols + extra_pred_cols)
-        if c in pred.columns
-    ]
-
-    joined = gdf.merge(
-        pred[pred_cols_to_join],
-        on="_join_key",
-        how="left",
-        validate="many_to_one"
+if df[BINARY_COL].value_counts().min() < N_SPLITS:
+    raise RuntimeError(
+        f"Minority class has fewer than {N_SPLITS} samples. "
+        "Cannot run stratified 5-fold CV."
     )
 
-    joined["prediction_join_matched"] = joined[PROB_COL].notna()
+# =====================================================
+# 5-FOLD CROSS-VALIDATION
+# =====================================================
 
-    joined.to_file(
-        out_gpkg,
-        layer=layer_name,
-        driver="GPKG"
+print("\n[INFO] Running 5-fold CV...")
+
+skf = StratifiedKFold(
+    n_splits=N_SPLITS,
+    shuffle=True,
+    random_state=RANDOM_STATE,
+)
+
+fold_rows = []
+pred_rows = []
+
+X_all = df[PREDICTORS].copy()
+y_all = df[BINARY_COL].astype(int)
+
+for fold_id, (train_idx, test_idx) in enumerate(skf.split(X_all, y_all), start=1):
+
+    print(f"[INFO] Starting fold {fold_id}...")
+
+    train = df.iloc[train_idx].copy()
+    test = df.iloc[test_idx].copy()
+
+    X_train_raw = train[PREDICTORS]
+    X_test_raw = test[PREDICTORS]
+
+    y_train = train[BINARY_COL].astype(int)
+    y_test = test[BINARY_COL].astype(int)
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train_raw)
+    X_test_scaled = scaler.transform(X_test_raw)
+
+    X_train = pd.DataFrame(
+        X_train_scaled,
+        columns=PREDICTORS,
+        index=train.index,
     )
 
-    spatial_keys = set(gdf["_join_key"].dropna())
-    pred_keys = set(pred["_join_key"].dropna())
+    X_test = pd.DataFrame(
+        X_test_scaled,
+        columns=PREDICTORS,
+        index=test.index,
+    )
 
-    summary = {
-        "spatial_layer": spatial_label,
-        "input_spatial_file": str(spatial_file),
-        "output_gpkg": str(out_gpkg),
-        "output_layer": layer_name,
-        "n_spatial_features": len(gdf),
-        "n_spatial_features_with_prediction": int(joined["prediction_join_matched"].sum()),
-        "n_spatial_features_without_prediction": int((~joined["prediction_join_matched"]).sum()),
-        "n_unique_prediction_keys": len(pred_keys),
-        "n_prediction_keys_matched_to_spatial": len(pred_keys.intersection(spatial_keys)),
-        "n_prediction_keys_unmatched_to_spatial": len(pred_keys.difference(spatial_keys)),
+    X_train = sm.add_constant(X_train, has_constant="add")
+    X_test = sm.add_constant(X_test, has_constant="add")
+
+    result = fit_logit(X_train, y_train)
+
+    pred_prob = result.predict(X_test)
+    pred_binary = (pred_prob >= PROB_THRESHOLD).astype(int)
+
+    metrics = calculate_metrics(
+        y_true=y_test,
+        y_pred=pred_binary,
+        y_prob=pred_prob,
+    )
+
+    fold_row = {
+        "fold": fold_id,
+        "n_train": len(train),
+        "n_test": len(test),
+        "prob_threshold": PROB_THRESHOLD,
+        "aic_train": result.aic,
+        "bic_train": result.bic,
+        "pseudo_r2_mcfadden_train": result.prsquared,
     }
 
-    print(f"[OK] Saved {spatial_label} GeoPackage:")
-    print(f"  {out_gpkg}")
-    print(f"  layer = {layer_name}")
-    print(
-        f"[INFO] {spatial_label}: matched "
-        f"{summary['n_spatial_features_with_prediction']:,} of "
-        f"{summary['n_spatial_features']:,} spatial features to predictions."
+    fold_row.update(metrics)
+    fold_rows.append(fold_row)
+
+    fold_pred = test[
+        [
+            "sett",
+            POP_COL,
+            CLASS_COL,
+            BINARY_COL,
+        ] + PREDICTORS
+    ].copy()
+
+    fold_pred["fold"] = fold_id
+    fold_pred["cv_prob_severe_decline"] = pred_prob.values
+    fold_pred["cv_pred_binary"] = pred_binary.values
+    fold_pred["cv_pred_class"] = np.where(
+        fold_pred["cv_pred_binary"] == 1,
+        "Severe decline",
+        "Not severe decline",
     )
 
-    return summary
+    pred_rows.append(fold_pred)
 
-
-def write_spatial_prediction_outputs(predictions):
-    """
-    Write point and buffer GeoPackages with logistic prediction attributes.
-    """
-    print("[INFO] Writing spatial prediction GeoPackages...")
-
-    summaries = []
-
-    summaries.append(
-        write_prediction_spatial_layer(
-            spatial_file=SETT_POINTS_FILE,
-            predictions=predictions,
-            out_gpkg=OUT_POINTS_GPKG,
-            layer_name="settlement_points_logistic_predictions",
-            spatial_label="settlement_points"
-        )
-    )
-
-    summaries.append(
-        write_prediction_spatial_layer(
-            spatial_file=SETT_BUFFERS_FILE,
-            predictions=predictions,
-            out_gpkg=OUT_BUFFERS_GPKG,
-            layer_name="settlement_buffers_logistic_predictions",
-            spatial_label="settlement_buffers"
-        )
-    )
-
-    summary_df = pd.DataFrame(summaries)
-
-    summary_df.to_csv(
-        OUT_SPATIAL_JOIN_SUMMARY,
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-    print("\n[OK] Saved spatial join summary:")
-    print(f"  {OUT_SPATIAL_JOIN_SUMMARY}")
-
-    return summary_df
-
-
+    print(f"[INFO] Finished fold {fold_id}.")
 
 # =====================================================
-# MAIN
+# SAVE CV OUTPUTS
 # =====================================================
 
-def main():
-    print("[INFO] Loading saved logistic model weights...")
-    model = load_model_weights(MODEL_WEIGHTS_FILE)
+cv_folds = pd.DataFrame(fold_rows)
+cv_preds = pd.concat(pred_rows, ignore_index=True)
 
-    scaler_params = pd.DataFrame({
-        "predictor": PREDICTORS,
-        "training_mean": [model["scaler_mean"][p] for p in PREDICTORS],
-        "training_std": [model["scaler_scale"][p] for p in PREDICTORS],
-        "coefficient": [model["coefficients"][p] for p in PREDICTORS],
-        "intercept": model["intercept"],
+cv_folds.to_csv(OUT_CV_FOLDS, index=False, encoding="utf-8-sig")
+cv_preds.to_csv(OUT_CV_PREDICTIONS, index=False, encoding="utf-8-sig")
+
+# =====================================================
+# POOLED OUT-OF-FOLD CV PERFORMANCE
+# =====================================================
+
+y_cv = cv_preds[BINARY_COL].astype(int)
+pred_cv = cv_preds["cv_pred_binary"].astype(int)
+prob_cv = cv_preds["cv_prob_severe_decline"].astype(float)
+
+pooled_metrics = calculate_metrics(y_cv, pred_cv, prob_cv)
+
+report = classification_report(
+    y_cv,
+    pred_cv,
+    labels=[1, 0],
+    target_names=[
+        "Severe decline",
+        "Not severe decline",
+    ],
+    output_dict=True,
+    zero_division=0,
+)
+
+report_df = (
+    pd.DataFrame(report)
+    .T
+    .reset_index()
+    .rename(columns={"index": "class_or_average"})
+)
+
+report_df.to_csv(OUT_CV_REPORT, index=False, encoding="utf-8-sig")
+
+conf = confusion_matrix(y_cv, pred_cv, labels=[1, 0])
+
+conf_df = pd.DataFrame(
+    conf,
+    index=[
+        "actual_Severe decline",
+        "actual_Not severe decline",
+    ],
+    columns=[
+        "pred_Severe decline",
+        "pred_Not severe decline",
+    ],
+)
+
+conf_df.to_csv(OUT_CV_CONFUSION, encoding="utf-8-sig")
+
+# =====================================================
+# FIT FINAL MODEL ON FULL DATASET
+# =====================================================
+
+print("\n[INFO] Fitting final model on full dataset...")
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(df[PREDICTORS])
+
+X_full = pd.DataFrame(
+    X_scaled,
+    columns=PREDICTORS,
+    index=df.index,
+)
+
+X_full = sm.add_constant(X_full, has_constant="add")
+y_full = df[BINARY_COL].astype(int)
+
+full_result = fit_logit(X_full, y_full)
+
+coef_rows = []
+
+for term, coef in full_result.params.items():
+    coef_rows.append({
+        "term": term,
+        "coefficient": coef,
+        "odds_ratio": np.exp(coef),
+        "std_error": full_result.bse.get(term, np.nan),
+        "z_value": full_result.tvalues.get(term, np.nan),
+        "p_value": full_result.pvalues.get(term, np.nan),
     })
 
-    scaler_params.to_csv(
-        OUT_SCALER_PARAMS,
-        index=False,
-        encoding="utf-8-sig"
-    )
+coef_df = pd.DataFrame(coef_rows)
+coef_df.to_csv(OUT_FULL_COEFS, index=False, encoding="utf-8-sig")
 
-    # -----------------------------------------------------
-    # Predict all settlements
-    # -----------------------------------------------------
-    print("[INFO] Reading all-settlement prediction data...")
-    pred_df = pd.read_csv(PREDICT_FILE)
-    pred_df = clean_columns(pred_df)
+with open(OUT_FULL_SUMMARY, "w", encoding="utf-8") as f:
+    f.write(full_result.summary().as_text())
 
-    check_required_columns(
-        pred_df,
-        [SETT_COL] + PREDICTORS,
-        "all-settlement prediction file"
-    )
+# -----------------------------------------------------
+# Save model weights for reuse without refitting
+# -----------------------------------------------------
 
-    print("[INFO] Applying model to ALL settlements...")
-    all_predictions, all_predictor_map, all_valid_mask = apply_logistic_model(
-        pred_df,
-        model,
-        source_label="all_settlements"
-    )
+weights = {
+    "description": (
+        "Logistic regression on standardised predictors. "
+        "z = (x - scaler_mean) / scaler_scale; "
+        "p = 1 / (1 + exp(-(intercept + sum(coefficient * z))))"
+    ),
+    "predictors": PREDICTORS,
+    "intercept": float(full_result.params["const"]),
+    "coefficients": {
+        p: float(full_result.params[p]) for p in PREDICTORS
+    },
+    "scaler_mean": {
+        p: float(m) for p, m in zip(PREDICTORS, scaler.mean_)
+    },
+    "scaler_scale": {
+        p: float(s) for p, s in zip(PREDICTORS, scaler.scale_)
+    },
+    "severe_decline_threshold": float(SEVERE_DECLINE_THRESHOLD),
+    "pop_change_column": POP_COL,
+    "n_train": int(len(df)),
+    "n_severe": int((y_full == 1).sum()),
+    "n_not_severe": int((y_full == 0).sum()),
+    "converged": bool(full_result.mle_retvals.get("converged", False)),
+    "training_file": str(IN_FILE),
+}
 
-    all_predictions = order_prediction_columns(all_predictions)
+with open(OUT_FULL_WEIGHTS, "w", encoding="utf-8") as f:
+    json.dump(weights, f, indent=2)
 
-    all_predictions.to_csv(
-        OUT_ALL_PREDICTIONS,
-        index=False,
-        encoding="utf-8-sig"
-    )
+if not weights["converged"]:
+    print("[WARNING] Full-data model did not converge. Check the weights before using them.")
 
-    # -----------------------------------------------------
-    # Write spatial prediction outputs
-    # -----------------------------------------------------
-    spatial_join_summary = write_spatial_prediction_outputs(all_predictions)
+# =====================================================
+# PRINT RESULTS
+# =====================================================
 
-    # -----------------------------------------------------
-    # Predict master validation rows and calculate accuracy
-    # -----------------------------------------------------
-    print("[INFO] Reading master matched validation file...")
-    master_df = pd.read_csv(MASTER_MATCHED_FILE)
-    master_df = clean_columns(master_df)
+print("\n[POOLED OUT-OF-FOLD CV METRICS]")
+for k, v in pooled_metrics.items():
+    print(f"{k}: {v}")
 
-    print("[INFO] Recalculating validation true labels using the training threshold...")
-    master_df = add_validation_true_labels(master_df)
+print("\n[CV CLASSIFICATION REPORT]")
+print(report_df.to_string(index=False))
 
-    print("[INFO] Applying model to master validation rows...")
-    validation_predictions, validation_predictor_map, validation_valid_mask = apply_logistic_model(
-        master_df,
-        model,
-        source_label="master_validation"
-    )
+print("\n[CV CONFUSION MATRIX]")
+print(conf_df.to_string())
 
-    validation_predictions = order_prediction_columns(validation_predictions)
+print("\n[FULL-DATA COEFFICIENTS]")
+print(coef_df.to_string(index=False))
 
-    validation_predictions.to_csv(
-        OUT_VALIDATION_PREDICTIONS,
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-    print("[INFO] Calculating fixed-threshold validation accuracy...")
-    metrics_df, conf_df, report_df = save_validation_accuracy_outputs(
-        validation_predictions
-    )
-
-    validation_rows_used = validation_predictions.dropna(
-        subset=[TRUE_BINARY_COL, PRED_BINARY_COL]
-    )
-
-    run_summary = pd.DataFrame([{
-        "severe_decline_threshold": SEVERE_DECLINE_THRESHOLD,
-        "prob_threshold": PROB_THRESHOLD,
-        "predictors": ", ".join(PREDICTORS),
-        "model_weights_file": str(MODEL_WEIGHTS_FILE),
-        "training_rows_used": model["n_train"],
-        "training_severe_count": model["n_severe"],
-        "training_not_severe_count": model["n_not_severe"],
-        "all_settlement_rows_total": len(all_predictions),
-        "all_settlement_rows_predicted": int((all_predictions["prediction_status"] == "predicted").sum()),
-        "all_settlement_rows_missing_predictors": int((all_predictions["prediction_status"] != "predicted").sum()),
-        "validation_rows_total": len(validation_predictions),
-        "validation_rows_with_percent_decrease": int(validation_predictions[VALIDATION_PERCENT_CHANGE_COL].notna().sum()),
-        "validation_true_severe_count": int((validation_predictions[TRUE_BINARY_COL] == 1).sum()),
-        "validation_true_not_severe_count": int((validation_predictions[TRUE_BINARY_COL] == 0).sum()),
-        "validation_rows_predicted": int((validation_predictions["prediction_status"] == "predicted").sum()),
-        "validation_rows_used_for_metrics": len(validation_rows_used),
-        "validation_label_source_column": VALIDATION_PERCENT_CHANGE_COL,
-        "all_prediction_file": str(OUT_ALL_PREDICTIONS),
-        "points_gpkg": str(OUT_POINTS_GPKG),
-        "buffers_gpkg": str(OUT_BUFFERS_GPKG),
-        "spatial_join_summary_file": str(OUT_SPATIAL_JOIN_SUMMARY),
-        "validation_prediction_file": str(OUT_VALIDATION_PREDICTIONS),
-        "metrics_file": str(OUT_METRICS),
-        "confusion_matrix_file": str(OUT_CONFUSION),
-        "classification_report_file": str(OUT_CLASS_REPORT),
-    }])
-
-    run_summary.to_csv(
-        OUT_RUN_SUMMARY,
-        index=False,
-        encoding="utf-8-sig"
-    )
-
-    # -----------------------------------------------------
-    # Console summary
-    # -----------------------------------------------------
-    print("\n[MODEL PREDICTORS]")
-    for p in PREDICTORS:
-        print(f"  - {p}")
-
-    print("\n[TRAINING LABEL THRESHOLD]")
-    print(f"  {TRAIN_POP_CHANGE_COL} <= {SEVERE_DECLINE_THRESHOLD}")
-
-    print("\n[VALIDATION LABEL THRESHOLD]")
-    print(f"  {VALIDATION_PERCENT_CHANGE_COL} <= {SEVERE_DECLINE_THRESHOLD}")
-
-    print("\n[PROBABILITY THRESHOLD]")
-    print(f"  prob_severe_decline >= {PROB_THRESHOLD}")
-
-    print("\n[TRAINING SAMPLE (from saved model)]")
-    print(f"  Rows used for training: {model['n_train']}")
-    print(f"  Severe decline:         {model['n_severe']}")
-    print(f"  Not severe decline:     {model['n_not_severe']}")
-
-    print("\n[VALIDATION TRUE CLASS COUNTS]")
-    print(
-        validation_predictions[TRUE_CLASS_COL]
-        .value_counts(dropna=False)
-        .to_string()
-    )
-
-    print("\n[ALL-SETTLEMENT PREDICTION SAMPLE]")
-    print(f"  Total rows: {len(all_predictions)}")
-    print(f"  Rows predicted: {(all_predictions['prediction_status'] == 'predicted').sum()}")
-    print(f"  Rows missing predictors: {(all_predictions['prediction_status'] != 'predicted').sum()}")
-
-    print("\n[ALL-SETTLEMENT PREDICTED CLASS COUNTS]")
-    print(all_predictions[PRED_CLASS_COL].value_counts(dropna=False).to_string())
-
-    print("\n[VALIDATION ACCURACY METRICS]")
-    print(metrics_df.to_string(index=False))
-
-    print("\n[VALIDATION CONFUSION MATRIX]")
-    print(conf_df.to_string())
-
-    print("\n[VALIDATION CLASSIFICATION REPORT]")
-    print(report_df.to_string(index=False))
-
-    print("\n[OK] Saved all-settlement predictions:")
-    print(f"  {OUT_ALL_PREDICTIONS}")
-
-    print("\n[OK] Saved point GeoPackage:")
-    print(f"  {OUT_POINTS_GPKG}")
-
-    print("\n[OK] Saved buffer GeoPackage:")
-    print(f"  {OUT_BUFFERS_GPKG}")
-
-    print("\n[OK] Saved spatial join summary:")
-    print(f"  {OUT_SPATIAL_JOIN_SUMMARY}")
-
-    print("\n[OK] Saved validation predictions:")
-    print(f"  {OUT_VALIDATION_PREDICTIONS}")
-
-    print("\n[OK] Saved validation metrics:")
-    print(f"  {OUT_METRICS}")
-
-    print("\n[OK] Saved validation confusion matrix:")
-    print(f"  {OUT_CONFUSION}")
-
-    print("\n[OK] Saved validation classification report:")
-    print(f"  {OUT_CLASS_REPORT}")
-
-    print("\n[OK] Saved run summary:")
-    print(f"  {OUT_RUN_SUMMARY}")
-
-    print("\n[INFO] Model weights loaded from:")
-    print(f"  {MODEL_WEIGHTS_FILE}")
-
-    print("\n[OK] Saved scaler parameters:")
-    print(f"  {OUT_SCALER_PARAMS}")
-
-
-if __name__ == "__main__":
-    main()
+print("\n[OK] Saved outputs to:")
+print(OUT_DIR)

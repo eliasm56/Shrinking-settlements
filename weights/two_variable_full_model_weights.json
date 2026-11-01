@@ -1,0 +1,27 @@
+{
+  "description": "Logistic regression on standardised predictors. z = (x - scaler_mean) / scaler_scale; p = 1 / (1 + exp(-(intercept + sum(coefficient * z))))",
+  "predictors": [
+    "collapse_loss_pct",
+    "recent_vs_early_pct"
+  ],
+  "intercept": -7.235653417194689,
+  "coefficients": {
+    "collapse_loss_pct": 0.7823168302091796,
+    "recent_vs_early_pct": -29.159381689050164
+  },
+  "scaler_mean": {
+    "collapse_loss_pct": 70.11491384080718,
+    "recent_vs_early_pct": 247.28447403679368
+  },
+  "scaler_scale": {
+    "collapse_loss_pct": 26.045272942389893,
+    "recent_vs_early_pct": 1167.2812943347071
+  },
+  "severe_decline_threshold": -50.0,
+  "pop_change_column": "pop_decrease",
+  "n_train": 223,
+  "n_severe": 49,
+  "n_not_severe": 174,
+  "converged": true,
+  "training_file": "D:\\PhD_main\\chapter_3\\outputs\\ntl_analysis_sett\\model_training_dataset.csv"
+}

@@ -540,25 +540,3 @@ at the top of the script. Those folders are listed in each step's
 **Outputs** section above.
 
 ---
-
-## Notes and known limitations
-
-- **Settlements dark in the baseline period.** Settlements with zero light in
-  1992–1995 have no defined `recent_vs_early_pct`. They are left out of
-  model training and receive no prediction in step 4. Their
-  `collapse_loss_pct` is recorded as 0, not missing.
-- **Very small baselines.** A very small early baseline can make
-  `recent_vs_early_pct` extremely large (thousands of percent or more), and
-  these settlements can have a strong influence on the model.
-- **Different probability thresholds.** Cross-validation metrics in step 3
-  are calculated at a 0.50 cut-off, while the final predictions and
-  validation in step 4 use 0.45.
-- **Unpredicted settlements count as active.** In step 5, any building that
-  doesn't intersect a buffer predicted as severe decline is marked active.
-  This includes buildings in settlements that received no prediction.
-- **Run time and disk space.** Step 7 runs 300 Monte Carlo draws for every
-  hazard map and, by default, writes every draw to disk. The per-draw CSVs
-  can be large. Set `DRAW_STRIDE` above 1 to keep only every *n*th draw, or
-  set `WRITE_MC_DRAWS = False` to skip them.
-- **Hard-coded paths.** File paths are absolute and must be edited before
-  running. See [Configuring paths](#configuring-paths).

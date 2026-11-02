@@ -5,7 +5,7 @@ This repository contains the analysis pipeline for the study titled
 of Permafrost Degradation", which has been submitted to Environmental Research Letters
 for review. The end goal is to estimate how much of Russia's Arctic 
 building stock could be damaged by climate-driven loss of permafrost bearing capacity, 
-and how much of that damage falls on buildings in **settlements that are no longer active**.
+and how much of that damage falls on buildings in **settlements that are either abandoned or shrinking**.
 
 To get there, the pipeline uses annual nighttime lights (NTL) for 1992–2013 to
 identify settlements that have experienced **severe population decline** (a

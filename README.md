@@ -80,6 +80,7 @@ weights/
 └── two_variable_full_model_weights.json       # Saved logistic regression weights
 code/
 ├── time_series/
+│   ├── ALAN_settlement_extract.js             # CCNL extraction in Google Earth Engine (optional)
 │   ├── build_ccnl_ntl_time_series.py          # Step 1
 │   └── ntl_time_series_analysis.py            # Step 2
 ├── models/
@@ -105,7 +106,7 @@ table below lists what each step reads.
 
 | Data | Used in | Description |
 | --- | --- | --- |
-| CCNL settlement NTL CSVs | Step 1 | A folder of CSV files of annual CCNL nighttime lights, with one row per settlement per year. Required columns: `sett`, `year`, `ntl_sum`. |
+| CCNL settlement NTL CSVs | Step 1 | A folder of CSV files of annual CCNL nighttime lights, with one row per settlement per year. Required columns: `sett`, `year`, `ntl_sum`. See [How the CCNL data were extracted](#how-the-ccnl-data-were-extracted). |
 | `model_training_dataset.csv` | Step 3 | One row per settlement with known population change. Required columns: `sett`, `pop_decrease` (population change in %, negative = decline), `collapse_loss_pct` and `recent_vs_early_pct` (from step 2). |
 | `master_matched_validation_with_all_metrics.csv` | Step 4 | Independent validation settlements. Required columns: `sett`, `percent_decrease` (population change in %), plus the two NTL predictors. |
 | Settlement points shapefile (`rus_sett_DCW_ACPR.shp`) | Step 4 | Settlement point locations with a `sett` name field. |
@@ -118,6 +119,38 @@ table below lists what each step reads.
 Settlement names (`sett`) are the key that links the settlement datasets in
 steps 1–5, so they must be spelled consistently. Name matching ignores case
 and extra whitespace.
+
+### How the CCNL data were extracted
+
+The CCNL CSVs in `inputs/` were exported from Google Earth Engine with
+`code/time_series/ALAN_settlement_extract.js`. You don't need to run this
+script, because its outputs are already provided. It is included so you can
+see how the data were accessed.
+
+The script:
+
+- reads the CCNL annual nighttime lights collection (`BNU/FGS/CCNL/v1`,
+  band `b1`)
+- summarises the pixels inside each 500 m settlement buffer at 1 km
+  resolution, keeping valid zero-valued pixels
+- exports one CSV per year to a Google Drive folder, with the fields `sett`,
+  `year`, `ntl_sum`, `ntl_mean`, `ntl_median`, `ntl_min`, `ntl_max`,
+  `ntl_stdDev` and `ntl_count`
+
+Only `sett`, `year` and `ntl_sum` are used in the rest of the pipeline.
+
+To run it yourself, paste it into the
+[Earth Engine Code Editor](https://code.earthengine.google.com/) and make
+these changes first:
+
+- upload the settlement buffers to your own Earth Engine assets, and change
+  the `settlements` asset path to point at them (the path in the script is a
+  private asset)
+- set `START_YEAR` and `END_YEAR` to the years you want (the analysis uses
+  1992–2013)
+
+Then start the export tasks from the **Tasks** tab. There is one task per
+year.
 
 ### Downloading the buildings data
 

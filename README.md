@@ -1,9 +1,11 @@
 # Detecting severe population decline in Arctic settlements from nighttime lights
 
-This repository contains the analysis pipeline for Chapter 3. The end goal is
-to estimate how much of Russia's Arctic building stock could be damaged by
-climate-driven loss of permafrost bearing capacity, and how much of that
-damage falls on buildings in **settlements that are no longer active**.
+This repository contains the analysis pipeline for the study titled 
+"Implications of Shrinking Populations in the Russian Arctic for Costs 
+of Permafrost Degradation", which has been submitted to Environmental Research Letters
+for review. The end goal is to estimate how much of Russia's Arctic 
+building stock could be damaged by climate-driven loss of permafrost bearing capacity, 
+and how much of that damage falls on buildings in **settlements that are either abandoned or shrinking**.
 
 To get there, the pipeline uses annual nighttime lights (NTL) for 1992–2013 to
 identify settlements that have experienced **severe population decline** (a
@@ -43,7 +45,7 @@ The pipeline has seven steps:
   - [Step 6: Assign buildings to municipalities](#step-6-assign-buildings-to-municipalities)
   - [Step 7: Model building damage](#step-7-model-building-damage)
 - [Key settings](#key-settings)
-- [Outputs at a glance](#outputs-at-a-glance)
+- [Provided outputs](#provided-outputs)
 - [Notes and known limitations](#notes-and-known-limitations)
 
 ---
@@ -73,6 +75,9 @@ conda activate ntl
 
 ```text
 inputs/                                        # All input data except the buildings GeoPackage
+outputs/                                       # Expected outputs (see "Provided outputs")
+weights/
+└── two_variable_full_model_weights.json       # Saved logistic regression weights
 code/
 ├── time_series/
 │   ├── build_ccnl_ntl_time_series.py          # Step 1
@@ -161,6 +166,9 @@ Windows paths, so **edit them before running anything**:
 - point `BUILDINGS_GPKG` in `join_activity_to_bldgs.py` at your downloaded
   buildings GeoPackage
 - point output paths wherever you want results written
+- to use the provided model weights instead of running step 3, set
+  `MODEL_WEIGHTS_FILE` in `predict_and_validate.py` to
+  `weights/two_variable_full_model_weights.json`
 
 `predict_and_validate.py`, `join_activity_to_bldgs.py` and
 `join_admin2_to_bldg.py` also set the
@@ -186,6 +194,23 @@ python code/models/damage_model_RUSonly.py
 ```
 
 Every script prints progress messages and summary information to the console.
+
+You don't have to run every step. The repository includes the outputs of
+each stage (see [Provided outputs](#provided-outputs)), so you can start
+partway through:
+
+| To start at | Use these provided files instead of rerunning earlier steps |
+| --- | --- |
+| Step 4 | `weights/two_variable_full_model_weights.json` (from step 3) and `outputs/ntl_collapse_recovery_metrics_v2.csv` (from step 2) |
+| Step 5 | `outputs/ntl_all_settlements_logistic_predictions_buffers.gpkg` (from step 4), plus the downloaded buildings GeoPackage |
+| Results only | `outputs/Damage model outputs.zip` holds the step 7 results, so you can inspect them without running anything |
+
+The building GeoPackages written by steps 5 and 6 are not provided, because
+they are built from the separately downloaded buildings data. To rerun step 7,
+first run steps 5 and 6.
+
+Compare your own results against the files in `outputs/` to check that the
+pipeline is reproducing the published analysis.
 
 ### Step 1: Build the NTL time series
 
@@ -462,25 +487,24 @@ every step from the first script that uses it.
 
 ---
 
-## Outputs at a glance
+## Provided outputs
 
-```text
-outputs/
-├── ntl_analysis_sett/
-│   ├── ntl_timeseries_sett_v2.csv                       # Step 1
-│   ├── ntl_collapse_recovery_metrics_v2.csv             # Step 2
-│   ├── logistic_two_variable_cv/                        # Step 3
-│   │   └── two_variable_full_model_weights.json
-│   ├── logistic_prediction_all_settlements_v3/          # Steps 4–6
-│   │   ├── ntl_all_settlements_logistic_predictions.csv
-│   │   ├── ntl_all_settlements_logistic_predictions_points.gpkg
-│   │   ├── ntl_all_settlements_logistic_predictions_buffers.gpkg
-│   │   ├── HABITAT_OSM_buildings_v3.gpkg                # Step 5
-│   │   └── HABITAT_OSM_buildings_v3_municipality.gpkg   # Step 6
-│   └── accuracy_assessment/
-│       └── logistic_regression_v3/                      # Step 4 validation
-└── damage_model_w_uncertainty_russia_with_adm2_v2/      # Step 7
-```
+The repository includes the expected outputs of the analysis, so you can
+check your results against them or skip steps (see
+[Running the pipeline](#running-the-pipeline)).
+
+| File | Produced by | Contents |
+| --- | --- | --- |
+| `outputs/ntl_collapse_recovery_metrics_v2.csv` | Step 2 | NTL change metrics for every settlement. |
+| `weights/two_variable_full_model_weights.json` | Step 3 | Saved logistic regression weights. |
+| `outputs/ntl_all_settlements_logistic_predictions.csv` | Step 4 | Predicted probability and class for every settlement. |
+| `outputs/ntl_all_settlements_logistic_predictions_points.gpkg` | Step 4 | Settlement points with predictions attached. |
+| `outputs/ntl_all_settlements_logistic_predictions_buffers.gpkg` | Step 4 | Settlement buffers with predictions attached. |
+| `outputs/Damage model outputs.zip` | Step 7 | All damage model output CSVs (summaries and per-draw results). |
+
+When you run the scripts yourself, each one writes to the output folder set
+at the top of the script. Those folders are listed in each step's
+**Outputs** section above.
 
 ---
 

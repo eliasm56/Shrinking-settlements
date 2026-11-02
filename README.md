@@ -1,11 +1,9 @@
 # Detecting severe population decline in Arctic settlements from nighttime lights
 
-This repository contains the analysis pipeline for the study titled 
-"Implications of Shrinking Populations in the Russian Arctic for Costs 
-of Permafrost Degradation", which has been submitted to Environmental Research Letters
-for review. The end goal is to estimate how much of Russia's Arctic 
-building stock could be damaged by climate-driven loss of permafrost bearing capacity, 
-and how much of that damage falls on buildings in **settlements that are either abandoned or shrinking**.
+This repository contains the analysis pipeline for Chapter 3. The end goal is
+to estimate how much of Russia's Arctic building stock could be damaged by
+climate-driven loss of permafrost bearing capacity, and how much of that
+damage falls on buildings in **settlements that are no longer active**.
 
 To get there, the pipeline uses annual nighttime lights (NTL) for 1992–2013 to
 identify settlements that have experienced **severe population decline** (a
@@ -74,6 +72,7 @@ conda activate ntl
 ## Repository structure
 
 ```text
+inputs/                                        # All input data except the buildings GeoPackage
 code/
 ├── time_series/
 │   ├── build_ccnl_ntl_time_series.py          # Step 1
@@ -94,9 +93,10 @@ and method in more depth than this README.
 
 ## Data
 
-The input data are included in this repository, except for the buildings
-GeoPackage (see [Downloading the buildings data](#downloading-the-buildings-data)
-below). The table below lists what each step reads.
+All input data are in the `inputs/` folder, except for the buildings
+GeoPackage, which must be downloaded separately (see
+[Downloading the buildings data](#downloading-the-buildings-data) below). The
+table below lists what each step reads.
 
 | Data | Used in | Description |
 | --- | --- | --- |
@@ -108,7 +108,7 @@ below). The table below lists what each step reads.
 | Buildings GeoPackage (`HABITAT_OSM_bldg_type_activity_topo_with_stories.gpkg`, layer `buildings`) | Step 5 | Arctic building footprints, available from the [Arctic Data Center](https://arcticdata.io/catalog/view/doi%3A10.18739%2FA28K74Z87). Not included in this repository. |
 | Russian municipal boundaries (`geoBoundaries-RUS-ADM2_simplified.shp`) | Step 6 | geoBoundaries ADM2 (municipality) polygons for Russia. The `shapeName` field gives the municipality name. |
 | Replacement cost inventory (`ACPR_Adm1_cost_inventory.csv`) | Step 7 | Residential and non-residential replacement cost per m² (2021 USD) for each region. Required columns: `shapeGroup`, `shapeName`, `RES_COST_PER_AREA`, `NONRES_COST_PER_AREA`. |
-| Bearing capacity hazard maps (netCDF) | Step 7 | A folder of gridded projections of bearing-capacity change (`bc_change`) on a regular longitude/latitude grid. File names must contain `ssp245` or `ssp585` to identify the climate scenario. |
+| Bearing capacity change (`building_bc_change_by_hazard_map.csv`) | Step 7 | Building-level projected change in pile bearing capacity for four climate models under SSP2-4.5 and SSP5-8.5. Provided in a ZIP file in `inputs/`. See [Bearing capacity data](#bearing-capacity-data). |
 
 Settlement names (`sett`) are the key that links the settlement datasets in
 steps 1–5, so they must be spelled consistently. Name matching ignores case
@@ -126,14 +126,41 @@ Center:
 Then set `BUILDINGS_GPKG` at the top of `code/gis/join_activity_to_bldgs.py`
 to the downloaded file's location.
 
+### Bearing capacity data
+
+The bearing capacity data used in step 7 are provided as
+`building_bc_change_by_hazard_map.csv`, inside a ZIP file in `inputs/`.
+Unzip it before running step 7. Full details are in
+[`README_bc_maps.txt`](README_bc_maps.txt). In summary:
+
+- The values are building-level changes in pile bearing capacity (0–1)
+  between 2015–2024 and 2055–2064. They come from the permafrost geotechnical
+  model of Streletskiy et al. (2012).
+- The model was forced with air temperature and precipitation from four
+  global climate models: AWI-CM-1-1-MR, CESM2-WACCM, MPI-ESM1-2-HR and
+  NorESM2-MM.
+- There is one column for each combination of climate model and scenario
+  (SSP2-4.5 and SSP5-8.5), so eight hazard maps in total. Each column name
+  starts with `bc_diff_ssp245_` or `bc_diff_ssp585_`.
+- Rows are joined to building footprints using the `bldg_id` field.
+
+> Streletskiy, D. A., Shiklomanov, N. I., & Nelson, F. E. (2012).
+> Permafrost, infrastructure, and climate change: A GIS-based landscape
+> approach to geotechnical modeling. *Arctic, Antarctic, and Alpine
+> Research*, 44(3), 368–380. <https://doi.org/10.1657/1938-4246-44.3.368>
+
 ---
 
 ## Configuring paths
 
 All file paths are set as constants near the top of each script (in the
 `FILES`, `FILE PATHS` or `INPUTS` sections). They are currently absolute
-Windows paths, so **edit them to point at your copy of the repository before
-running anything.**
+Windows paths, so **edit them before running anything**:
+
+- point input paths at the matching files in `inputs/`
+- point `BUILDINGS_GPKG` in `join_activity_to_bldgs.py` at your downloaded
+  buildings GeoPackage
+- point output paths wherever you want results written
 
 `predict_and_validate.py`, `join_activity_to_bldgs.py` and
 `join_admin2_to_bldg.py` also set the

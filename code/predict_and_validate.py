@@ -188,7 +188,7 @@ PRED_CLASS_COL = "predicted_class"
 SEVERE_DECLINE_THRESHOLD = -50.0
 
 # Model probability threshold
-PROB_THRESHOLD = 0.45
+PROB_THRESHOLD = 0.50
 
 # Final selected logistic predictors.
 # These must match the model-selection output.
